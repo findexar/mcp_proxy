@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: mcp-proxy
+    env: node
+    plan: starter
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: MCP_PROXY_API_KEY
+        generateValue: true
+      - key: PORT
+        value: 8008
+    healthCheckPath: /health
+    autoDeploy: true

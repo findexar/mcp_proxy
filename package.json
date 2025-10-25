@@ -1,0 +1,25 @@
+{
+  "name": "mcp-proxy",
+  "version": "1.0.0",
+  "description": "MCP Proxy Service for bridging modern HTTP to legacy SSE connections",
+  "main": "src/mcp_proxy.ts",
+  "type": "module",
+  "scripts": {
+    "start": "node --loader ts-node/esm src/mcp_proxy.ts",
+    "dev": "node --loader ts-node/esm --watch src/mcp_proxy.ts",
+    "build": "tsc",
+    "test": "echo \"No tests yet\""
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^0.5.0",
+    "dotenv": "^16.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "ts-node": "^10.9.0",
+    "typescript": "^5.0.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
