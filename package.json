@@ -2,12 +2,13 @@
   "name": "mcp-proxy",
   "version": "1.0.0",
   "description": "MCP Proxy Service for bridging modern HTTP to legacy SSE connections",
-  "main": "src/mcp_proxy.ts",
+  "main": "dist/mcp_proxy.js",
   "type": "module",
   "scripts": {
-    "start": "node --loader ts-node/esm src/mcp_proxy.ts",
-    "dev": "node --loader ts-node/esm --watch src/mcp_proxy.ts",
+    "prebuild": "rm -rf dist",
     "build": "tsc",
+    "start": "node dist/mcp_proxy.js",
+    "dev": "node --loader ts-node/esm --watch src/mcp_proxy.ts",
     "test": "echo \"No tests yet\""
   },
   "dependencies": {

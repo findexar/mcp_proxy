@@ -3,8 +3,8 @@ services:
     name: mcp-proxy
     env: node
     plan: starter
-    buildCommand: npm install
-    startCommand: npm start
+    buildCommand: pnpm install && pnpm build
+    startCommand: pnpm start
     envVars:
       - key: NODE_ENV
         value: production
