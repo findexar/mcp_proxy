@@ -118,10 +118,7 @@ async function forwardToTarget(targetServer: string, method: string, params: any
 
     const requestId = Math.floor(Math.random() * 1000000).toString();
 
-    // Get connection - need to get it first to register promise
-    const connection = await getConnection(targetServer, apiKey);
-
-    // Register response promise synchronously BEFORE creating Promise wrapper
+    // Create response promise FIRST (before getConnection to ensure it's ready)
     let resolveCallback: (value: any) => void;
     let rejectCallback: (error: any) => void;
     let timeoutId: NodeJS.Timeout;
@@ -131,15 +128,12 @@ async function forwardToTarget(targetServer: string, method: string, params: any
         rejectCallback = reject;
 
         timeoutId = setTimeout(() => {
-            if (connection.responsePromises.has(requestId)) {
-                connection.responsePromises.delete(requestId);
-                reject(new Error(`SSE response timeout for ${method}`));
-            }
+            reject(new Error(`SSE response timeout for ${method}`));
         }, 30000);
     });
 
-    // Now register in Map synchronously (not inside Promise constructor)
-    connection.responsePromises.set(requestId, {
+    // Get connection and register promise inside getConnection
+    const connection = await getConnection(targetServer, apiKey, requestId, {
         resolve: (value: any) => {
             clearTimeout(timeoutId);
             resolveCallback(value);
@@ -216,13 +210,25 @@ async function forwardToTarget(targetServer: string, method: string, params: any
 }
 
 // Create or get cached connection with persistent SSE
-async function getConnection(targetServer: string, apiKey?: string): Promise<CachedConnection> {
+async function getConnection(
+    targetServer: string,
+    apiKey?: string,
+    requestId?: string,
+    promiseHandlers?: { resolve: Function; reject: Function }
+): Promise<CachedConnection> {
     console.log(`[MCP-PROXY] getConnection called for: ${targetServer}, apiKey: ${apiKey ? 'present' : 'missing'}`);
     // Check cache first
     const cached = connectionCache.get(targetServer);
     if (cached && cached.isHealthy) {
         cached.lastUsed = Date.now();
         console.log(`[MCP-PROXY] Using cached connection for: ${targetServer}, sessionId: ${cached.sessionId}`);
+
+        // Register promise for this request if provided
+        if (requestId && promiseHandlers) {
+            cached.responsePromises.set(requestId, promiseHandlers);
+            console.log(`[MCP-PROXY] Registered promise for request ${requestId} in cached connection`);
+        }
+
         return cached;
     }
 
@@ -346,6 +352,12 @@ async function getConnection(targetServer: string, apiKey?: string): Promise<Cac
     // Cache the connection
     connectionCache.set(targetServer, connection);
     console.log(`[MCP-PROXY] Cached connection for: ${targetServer}, sessionId: ${sessionId}`);
+
+    // Register promise for this request if provided (for new connections)
+    if (requestId && promiseHandlers) {
+        connection.responsePromises.set(requestId, promiseHandlers);
+        console.log(`[MCP-PROXY] Registered promise for request ${requestId} in new connection`);
+    }
 
     // Start SSE response listener AFTER caching to avoid race conditions
     console.log(`[MCP-PROXY] Starting SSE response listener for new connection`);

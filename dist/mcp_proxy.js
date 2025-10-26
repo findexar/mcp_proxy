@@ -3,7 +3,7 @@ import { createServer } from "node:http";
 import { URL } from "node:url";
 const connectionCache = new Map();
 // Configuration
-const CACHE_TTL = 15 * 60 * 1000; // 15 minutes
+const CACHE_TTL = 60 * 60 * 1000; // 60 minutes
 const CLEANUP_INTERVAL = 5 * 60 * 1000; // 5 minutes
 const API_KEY = process.env.MCP_PROXY_API_KEY || 'default-key';
 // Cleanup old connections
@@ -92,8 +92,29 @@ function parseSseResponse(sseText) {
 // Forward request to target server via persistent SSE connection
 async function forwardToTarget(targetServer, method, params, apiKey) {
     console.log(`[MCP-PROXY] forwardToTarget called with:`, { targetServer, method, params, apiKey: apiKey ? 'present' : 'missing' });
-    const connection = await getConnection(targetServer, apiKey);
     const requestId = Math.floor(Math.random() * 1000000).toString();
+    // Create response promise FIRST (before getConnection to ensure it's ready)
+    let resolveCallback;
+    let rejectCallback;
+    let timeoutId;
+    const responsePromise = new Promise((resolve, reject) => {
+        resolveCallback = resolve;
+        rejectCallback = reject;
+        timeoutId = setTimeout(() => {
+            reject(new Error(`SSE response timeout for ${method}`));
+        }, 30000);
+    });
+    // Get connection and register promise inside getConnection
+    const connection = await getConnection(targetServer, apiKey, requestId, {
+        resolve: (value) => {
+            clearTimeout(timeoutId);
+            resolveCallback(value);
+        },
+        reject: (error) => {
+            clearTimeout(timeoutId);
+            rejectCallback(error);
+        }
+    });
     // Create JSON-RPC request
     const request = {
         jsonrpc: '2.0',
@@ -143,28 +164,23 @@ async function forwardToTarget(targetServer, method, params, apiKey) {
     // Handle 202 Accepted with empty content-type (Pizzaz pattern)
     if (response.status === 202 && !contentType) {
         console.log(`[MCP-PROXY] Waiting for SSE response for request ${requestId}`);
-        // Wait for response via SSE stream
-        return new Promise((resolve, reject) => {
-            connection.responsePromises.set(requestId, { resolve, reject });
-            // Set timeout
-            setTimeout(() => {
-                if (connection.responsePromises.has(requestId)) {
-                    connection.responsePromises.delete(requestId);
-                    reject(new Error(`SSE response timeout for ${method}`));
-                }
-            }, 30000); // 30 second timeout
-        });
+        return responsePromise;
     }
     throw new Error(`Unexpected content-type: ${contentType}`);
 }
 // Create or get cached connection with persistent SSE
-async function getConnection(targetServer, apiKey) {
+async function getConnection(targetServer, apiKey, requestId, promiseHandlers) {
     console.log(`[MCP-PROXY] getConnection called for: ${targetServer}, apiKey: ${apiKey ? 'present' : 'missing'}`);
     // Check cache first
     const cached = connectionCache.get(targetServer);
     if (cached && cached.isHealthy) {
         cached.lastUsed = Date.now();
         console.log(`[MCP-PROXY] Using cached connection for: ${targetServer}, sessionId: ${cached.sessionId}`);
+        // Register promise for this request if provided
+        if (requestId && promiseHandlers) {
+            cached.responsePromises.set(requestId, promiseHandlers);
+            console.log(`[MCP-PROXY] Registered promise for request ${requestId} in cached connection`);
+        }
         return cached;
     }
     console.log(`[MCP-PROXY] Creating new connection to: ${targetServer}`);
@@ -270,18 +286,28 @@ async function getConnection(targetServer, apiKey) {
         baseUrl: connection.baseUrl,
         ssePath: connection.ssePath
     });
-    // Start SSE response listener
-    console.log(`[MCP-PROXY] Starting SSE response listener for new connection`);
-    startSseResponseListener(connection);
     // Cache the connection
     connectionCache.set(targetServer, connection);
     console.log(`[MCP-PROXY] Cached connection for: ${targetServer}, sessionId: ${sessionId}`);
+    // Register promise for this request if provided (for new connections)
+    if (requestId && promiseHandlers) {
+        connection.responsePromises.set(requestId, promiseHandlers);
+        console.log(`[MCP-PROXY] Registered promise for request ${requestId} in new connection`);
+    }
+    // Start SSE response listener AFTER caching to avoid race conditions
+    console.log(`[MCP-PROXY] Starting SSE response listener for new connection`);
+    startSseResponseListener(connection);
+    // Wait for the listener to actually start reading - same delay as fetchMcpMetaData.ts
+    console.log("[MCP-PROXY] Starting 5 second delay for response listener to be fully ready");
+    await new Promise(resolve => setTimeout(resolve, 5000));
+    console.log("[MCP-PROXY] 5 second delay for response listener to be fully ready completed");
     return connection;
 }
 // Start SSE response listener for a connection
 function startSseResponseListener(connection) {
     if (!connection.sseReader)
         return;
+    let buffer = '';
     const readLoop = async () => {
         try {
             while (true) {
@@ -291,25 +317,32 @@ function startSseResponseListener(connection) {
                     connection.isHealthy = false;
                     break;
                 }
-                const text = new TextDecoder().decode(value);
-                console.log(`[MCP-PROXY] SSE data received: ${text.slice(0, 200)}...`);
-                // Parse SSE response
-                try {
-                    const json = parseSseResponse(text);
-                    console.log(`[MCP-PROXY] Parsed SSE response:`, json);
-                    // Match response to pending request
-                    if (json.id && connection.responsePromises.has(json.id.toString())) {
-                        console.log(`[MCP-PROXY] Matched response for id: ${json.id}`);
-                        const { resolve } = connection.responsePromises.get(json.id.toString());
-                        connection.responsePromises.delete(json.id.toString());
-                        resolve(json);
+                const chunk = new TextDecoder().decode(value, { stream: true });
+                buffer += chunk;
+                // Process complete SSE events (ending with \n\n)
+                let eventEnd;
+                while ((eventEnd = buffer.indexOf('\n\n')) !== -1) {
+                    const eventText = buffer.substring(0, eventEnd);
+                    buffer = buffer.substring(eventEnd + 2);
+                    console.log(`[MCP-PROXY] Processing complete SSE event (${eventText.length} chars)`);
+                    // Parse SSE response
+                    try {
+                        const json = parseSseResponse(eventText);
+                        console.log(`[MCP-PROXY] Parsed SSE response:`, json);
+                        // Match response to pending request
+                        if (json.id && connection.responsePromises.has(json.id.toString())) {
+                            console.log(`[MCP-PROXY] Matched response for id: ${json.id}`);
+                            const { resolve } = connection.responsePromises.get(json.id.toString());
+                            connection.responsePromises.delete(json.id.toString());
+                            resolve(json);
+                        }
+                        else {
+                            console.log(`[MCP-PROXY] No match for response id: ${json.id}`);
+                        }
                     }
-                    else {
-                        console.log(`[MCP-PROXY] No match for response id: ${json.id}`);
+                    catch (e) {
+                        console.log(`[MCP-PROXY] Failed to parse SSE response:`, e);
                     }
-                }
-                catch (e) {
-                    console.log(`[MCP-PROXY] Failed to parse SSE response:`, e);
                 }
             }
         }
@@ -341,6 +374,7 @@ async function handleMcpRequest(req, res) {
         // Get target server
         const targetServer = getTargetServer(req);
         if (!targetServer) {
+            console.log(`[MCP-PROXY] Missing X-Target-Server header`);
             res.writeHead(400, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ error: 'Missing X-Target-Server header' }));
             return;
@@ -411,6 +445,7 @@ const httpServer = createServer(async (req, res) => {
         return;
     }
     if (!req.url) {
+        console.log(`[MCP-PROXY] Missing URL`);
         res.writeHead(400).end('Missing URL');
         return;
     }
@@ -431,7 +466,7 @@ const httpServer = createServer(async (req, res) => {
     res.writeHead(404).end('Not Found');
 });
 // Start server
-const port = process.env.PORT || 8008;
+const port = process.env.PORT || 10000;
 httpServer.listen(port, () => {
     console.log(`[MCP-PROXY] Server listening on port ${port}`);
     console.log(`[MCP-PROXY] Health check: http://localhost:${port}/health`);
