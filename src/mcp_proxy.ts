@@ -343,13 +343,13 @@ async function getConnection(targetServer: string, apiKey?: string): Promise<Cac
         ssePath: connection.ssePath
     });
 
-    // Start SSE response listener
-    console.log(`[MCP-PROXY] Starting SSE response listener for new connection`);
-    startSseResponseListener(connection);
-
     // Cache the connection
     connectionCache.set(targetServer, connection);
     console.log(`[MCP-PROXY] Cached connection for: ${targetServer}, sessionId: ${sessionId}`);
+
+    // Start SSE response listener AFTER caching to avoid race conditions
+    console.log(`[MCP-PROXY] Starting SSE response listener for new connection`);
+    startSseResponseListener(connection);
 
     return connection;
 }
@@ -413,9 +413,13 @@ function startSseResponseListener(connection: CachedConnection) {
         }
     };
 
-    // Start the listener
+    // Start the listener with initial delay to allow promise registration
     console.log(`[MCP-PROXY] Starting SSE response listener for connection`);
-    readLoop();
+
+    // Fire-and-forget: start read loop after a delay to allow caller to register promises
+    setTimeout(() => {
+        readLoop();
+    }, 5000); // 5 second delay - same as fetchMcpMetaData.ts, needed for stable operation
 }
 
 // Handle MCP requests
