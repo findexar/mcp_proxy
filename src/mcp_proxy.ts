@@ -121,25 +121,33 @@ async function forwardToTarget(targetServer: string, method: string, params: any
     // Get connection - need to get it first to register promise
     const connection = await getConnection(targetServer, apiKey);
 
-    // Register response promise IMMEDIATELY after getting connection (before fetch)
+    // Register response promise synchronously BEFORE creating Promise wrapper
+    let resolveCallback: (value: any) => void;
+    let rejectCallback: (error: any) => void;
+    let timeoutId: NodeJS.Timeout;
+
     const responsePromise = new Promise<any>((resolve, reject) => {
-        const timeoutId = setTimeout(() => {
+        resolveCallback = resolve;
+        rejectCallback = reject;
+
+        timeoutId = setTimeout(() => {
             if (connection.responsePromises.has(requestId)) {
                 connection.responsePromises.delete(requestId);
                 reject(new Error(`SSE response timeout for ${method}`));
             }
         }, 30000);
+    });
 
-        connection.responsePromises.set(requestId, {
-            resolve: (value: any) => {
-                clearTimeout(timeoutId);
-                resolve(value);
-            },
-            reject: (error: any) => {
-                clearTimeout(timeoutId);
-                reject(error);
-            }
-        });
+    // Now register in Map synchronously (not inside Promise constructor)
+    connection.responsePromises.set(requestId, {
+        resolve: (value: any) => {
+            clearTimeout(timeoutId);
+            resolveCallback(value);
+        },
+        reject: (error: any) => {
+            clearTimeout(timeoutId);
+            rejectCallback(error);
+        }
     });
 
     // Create JSON-RPC request
