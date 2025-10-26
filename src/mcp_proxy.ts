@@ -17,7 +17,7 @@ interface CachedConnection {
 const connectionCache = new Map<string, CachedConnection>();
 
 // Configuration
-const CACHE_TTL = 15 * 60 * 1000; // 15 minutes
+const CACHE_TTL = 60 * 60 * 1000; // 60 minutes
 const CLEANUP_INTERVAL = 5 * 60 * 1000; // 5 minutes
 const API_KEY = process.env.MCP_PROXY_API_KEY || 'default-key';
 
@@ -115,8 +115,32 @@ function parseSseResponse(sseText: string): any {
 // Forward request to target server via persistent SSE connection
 async function forwardToTarget(targetServer: string, method: string, params: any, apiKey?: string): Promise<any> {
     console.log(`[MCP-PROXY] forwardToTarget called with:`, { targetServer, method, params, apiKey: apiKey ? 'present' : 'missing' });
-    const connection = await getConnection(targetServer, apiKey);
+
     const requestId = Math.floor(Math.random() * 1000000).toString();
+
+    // Get connection - need to get it first to register promise
+    const connection = await getConnection(targetServer, apiKey);
+
+    // Register response promise IMMEDIATELY after getting connection (before fetch)
+    const responsePromise = new Promise<any>((resolve, reject) => {
+        const timeoutId = setTimeout(() => {
+            if (connection.responsePromises.has(requestId)) {
+                connection.responsePromises.delete(requestId);
+                reject(new Error(`SSE response timeout for ${method}`));
+            }
+        }, 30000);
+
+        connection.responsePromises.set(requestId, {
+            resolve: (value: any) => {
+                clearTimeout(timeoutId);
+                resolve(value);
+            },
+            reject: (error: any) => {
+                clearTimeout(timeoutId);
+                reject(error);
+            }
+        });
+    });
 
     // Create JSON-RPC request
     const request = {
@@ -140,27 +164,6 @@ async function forwardToTarget(targetServer: string, method: string, params: any
         headers['Authorization'] = `Bearer ${apiKey}`;
         console.log(`[MCP-PROXY] Adding Authorization header with API key`);
     }
-
-    // Register response promise BEFORE sending request
-    const responsePromise = new Promise<any>((resolve, reject) => {
-        const timeoutId = setTimeout(() => {
-            if (connection.responsePromises.has(requestId)) {
-                connection.responsePromises.delete(requestId);
-                reject(new Error(`SSE response timeout for ${method}`));
-            }
-        }, 30000);
-
-        connection.responsePromises.set(requestId, {
-            resolve: (value: any) => {
-                clearTimeout(timeoutId);
-                resolve(value);
-            },
-            reject: (error: any) => {
-                clearTimeout(timeoutId);
-                reject(error);
-            }
-        });
-    });
 
     // Send POST request to target server
     const response = await fetch(connection.postUrl, {
