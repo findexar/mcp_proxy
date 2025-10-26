@@ -506,7 +506,7 @@ const httpServer = createServer(async (req: IncomingMessage, res: ServerResponse
 });
 
 // Start server
-const port = process.env.PORT || 8008;
+const port = process.env.PORT || 10000;
 httpServer.listen(port, () => {
     console.log(`[MCP-PROXY] Server listening on port ${port}`);
     console.log(`[MCP-PROXY] Health check: http://localhost:${port}/health`);
