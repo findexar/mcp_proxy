@@ -244,9 +244,19 @@ async function getConnection(
         targetUrl = new URL(`http://${targetServer}`);
     }
 
+    // Derive base URL and paths from target server URL
+    // Use pathname directly if present, otherwise default to /mcp
     const baseUrl = `${targetUrl.protocol}//${targetUrl.host}`;
-    const ssePath = targetUrl.pathname;
-    const postPath = '/mcp/messages';
+    let ssePath = targetUrl.pathname;
+    // If pathname is empty, "/", or doesn't end with /mcp, default to /mcp
+    if (!ssePath || ssePath === "/" || (!ssePath.endsWith("/mcp") && !ssePath.endsWith("/mcp/"))) {
+        ssePath = "/mcp";
+    }
+    // Normalize trailing slash
+    if (ssePath.endsWith("/")) {
+        ssePath = ssePath.slice(0, -1);
+    }
+    const postPath = "/mcp/messages";
 
     console.log(`[MCP-PROXY] Parsed target server details:`, {
         targetServer,
