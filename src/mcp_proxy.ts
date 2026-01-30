@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { URL } from "node:url";
+import { fetch as undiciFetch, Agent } from "undici";
 
 // Connection cache - target server URL as key
 interface CachedConnection {
@@ -200,9 +201,9 @@ async function forwardToTarget(targetServer: string, method: string, params: any
         return parsedResponse;
     }
 
-    // Handle 202 Accepted with empty content-type (Pizzaz pattern)
-    if (response.status === 202 && !contentType) {
-        console.log(`[MCP-PROXY] Waiting for SSE response for request ${requestId}`);
+    // Handle 202 Accepted: response body is not used; result comes via SSE stream (kitchen-sink, Pizzaz, etc.)
+    if (response.status === 202) {
+        console.log(`[MCP-PROXY] 202 Accepted, waiting for SSE response for request ${requestId}`);
         return responsePromise;
     }
 
@@ -279,12 +280,14 @@ async function getConnection(
         console.log(`[MCP-PROXY] Adding Authorization header to SSE connection`);
     }
 
-    // Create SSE connection to target server
+    // Create SSE connection to target server (no body timeout so long-lived SSE stays open)
     const sseUrl = `${baseUrl}${ssePath}`;
     console.log(`[MCP-PROXY] Creating SSE connection to: ${sseUrl}`);
-    const sseResp = await fetch(sseUrl, {
+    const sseDispatcher = new Agent({ bodyTimeout: 0, headersTimeout: 0 });
+    const sseResp = await undiciFetch(sseUrl, {
         method: 'GET',
-        headers: sseHeaders
+        headers: sseHeaders,
+        dispatcher: sseDispatcher
     });
 
     console.log(`[MCP-PROXY] SSE response status: ${sseResp.status}`);
