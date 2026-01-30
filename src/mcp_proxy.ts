@@ -178,6 +178,12 @@ async function forwardToTarget(targetServer: string, method: string, params: any
     console.log(`[MCP-PROXY] Response status: ${response.status}`);
     console.log(`[MCP-PROXY] Response headers:`, JSON.stringify(Object.fromEntries(response.headers.entries()), null, 2));
 
+    // 202 Accepted: result is delivered via SSE stream, not in POST body (kitchen-sink, Pizzaz, etc.)
+    if (response.status === 202) {
+        console.log(`[MCP-PROXY] 202 Accepted, waiting for SSE response for request ${requestId}`);
+        return responsePromise;
+    }
+
     if (!response.ok) {
         throw new Error(`Target server error: ${response.status}`);
     }
@@ -199,12 +205,6 @@ async function forwardToTarget(targetServer: string, method: string, params: any
         const parsedResponse = parseSseResponse(text);
         console.log(`[MCP-PROXY] Parsed SSE response:`, JSON.stringify(parsedResponse, null, 2));
         return parsedResponse;
-    }
-
-    // Handle 202 Accepted: response body is not used; result comes via SSE stream (kitchen-sink, Pizzaz, etc.)
-    if (response.status === 202) {
-        console.log(`[MCP-PROXY] 202 Accepted, waiting for SSE response for request ${requestId}`);
-        return responsePromise;
     }
 
     throw new Error(`Unexpected content-type: ${contentType}`);
