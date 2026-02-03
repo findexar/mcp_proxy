@@ -210,10 +210,24 @@ async function forwardToTarget(targetServer: string, method: string, params: any
         return parsedResponse;
     }
 
-    // Allow text/plain for 202 responses (safety check - should have returned earlier)
-    if (status === 202) {
-        console.log(`[MCP-PROXY] 202 with text/plain - returning SSE promise (fallback check)`);
-        return responsePromise;
+    // 202 with text/plain: result is delivered via SSE (kitchen-sink etc.)
+    if (status === 202 || contentType.includes('text/plain')) {
+        const text = await response.text();
+        if (status === 202) {
+            console.log(`[MCP-PROXY] 202 with text/plain - returning SSE promise`);
+            return responsePromise;
+        }
+        // 200 + text/plain: try parse as JSON (some servers send JSON with text/plain)
+        try {
+            const parsed = text ? JSON.parse(text) : null;
+            if (parsed && (parsed.result !== undefined || parsed.error !== undefined)) {
+                console.log(`[MCP-PROXY] Parsed text/plain as JSON-RPC`);
+                return parsed;
+            }
+        } catch {
+            /* ignore */
+        }
+        throw new Error(`Unexpected content-type: ${contentType}`);
     }
 
     throw new Error(`Unexpected content-type: ${contentType}`);
