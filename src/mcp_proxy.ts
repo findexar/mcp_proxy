@@ -179,8 +179,10 @@ async function forwardToTarget(targetServer: string, method: string, params: any
     console.log(`[MCP-PROXY] Response headers:`, JSON.stringify(Object.fromEntries(response.headers.entries()), null, 2));
 
     // 202 Accepted: result is delivered via SSE stream, not in POST body (kitchen-sink, Pizzaz, etc.)
-    if (response.status === 202) {
+    // For 202, ignore content-type - the actual response comes via SSE
+    if (response.status === 202 || response.status === '202') {
         console.log(`[MCP-PROXY] 202 Accepted, waiting for SSE response for request ${requestId}`);
+        // Don't check content-type for 202 - response comes via SSE
         return responsePromise;
     }
 
@@ -188,7 +190,7 @@ async function forwardToTarget(targetServer: string, method: string, params: any
         throw new Error(`Target server error: ${response.status}`);
     }
 
-    // Handle different response types
+    // Handle different response types (only for non-202 responses)
     const contentType = response.headers.get('content-type') || '';
     console.log(`[MCP-PROXY] Content type: ${contentType}`);
 
@@ -205,6 +207,12 @@ async function forwardToTarget(targetServer: string, method: string, params: any
         const parsedResponse = parseSseResponse(text);
         console.log(`[MCP-PROXY] Parsed SSE response:`, JSON.stringify(parsedResponse, null, 2));
         return parsedResponse;
+    }
+
+    // Allow text/plain for 202 responses (safety check - should have returned earlier)
+    if (response.status === 202 || response.status === '202') {
+        console.log(`[MCP-PROXY] 202 with text/plain - returning SSE promise`);
+        return responsePromise;
     }
 
     throw new Error(`Unexpected content-type: ${contentType}`);
