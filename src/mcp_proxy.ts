@@ -175,12 +175,13 @@ async function forwardToTarget(targetServer: string, method: string, params: any
         body: JSON.stringify(request)
     });
 
-    console.log(`[MCP-PROXY] Response status: ${response.status}`);
+    const status = Number(response.status);
+    console.log(`[MCP-PROXY] Response status: ${response.status} (type: ${typeof response.status}, as number: ${status})`);
     console.log(`[MCP-PROXY] Response headers:`, JSON.stringify(Object.fromEntries(response.headers.entries()), null, 2));
 
     // 202 Accepted: result is delivered via SSE stream, not in POST body (kitchen-sink, Pizzaz, etc.)
     // For 202, ignore content-type - the actual response comes via SSE
-    if (response.status === 202 || response.status === '202') {
+    if (status === 202) {
         console.log(`[MCP-PROXY] 202 Accepted, waiting for SSE response for request ${requestId}`);
         // Don't check content-type for 202 - response comes via SSE
         return responsePromise;
@@ -210,8 +211,8 @@ async function forwardToTarget(targetServer: string, method: string, params: any
     }
 
     // Allow text/plain for 202 responses (safety check - should have returned earlier)
-    if (response.status === 202 || response.status === '202') {
-        console.log(`[MCP-PROXY] 202 with text/plain - returning SSE promise`);
+    if (status === 202) {
+        console.log(`[MCP-PROXY] 202 with text/plain - returning SSE promise (fallback check)`);
         return responsePromise;
     }
 
@@ -314,7 +315,7 @@ async function getConnection(
     }
 
     // Read initial SSE data to get session ID
-    const reader = bodyStream.getReader();
+    const reader = bodyStream.getReader() as ReadableStreamDefaultReader<Uint8Array>;
     const decoder = new TextDecoder();
     let sessionFound = false;
     let bootstrapData = '';

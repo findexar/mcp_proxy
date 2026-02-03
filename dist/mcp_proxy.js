@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import { createServer } from "node:http";
 import { URL } from "node:url";
+import { fetch as undiciFetch, Agent } from "undici";
 const connectionCache = new Map();
 // Configuration
 const CACHE_TTL = 60 * 60 * 1000; // 60 minutes
@@ -140,12 +141,20 @@ async function forwardToTarget(targetServer, method, params, apiKey) {
         headers,
         body: JSON.stringify(request)
     });
-    console.log(`[MCP-PROXY] Response status: ${response.status}`);
+    const status = Number(response.status);
+    console.log(`[MCP-PROXY] Response status: ${response.status} (type: ${typeof response.status}, as number: ${status})`);
     console.log(`[MCP-PROXY] Response headers:`, JSON.stringify(Object.fromEntries(response.headers.entries()), null, 2));
+    // 202 Accepted: result is delivered via SSE stream, not in POST body (kitchen-sink, Pizzaz, etc.)
+    // For 202, ignore content-type - the actual response comes via SSE
+    if (status === 202) {
+        console.log(`[MCP-PROXY] 202 Accepted, waiting for SSE response for request ${requestId}`);
+        // Don't check content-type for 202 - response comes via SSE
+        return responsePromise;
+    }
     if (!response.ok) {
         throw new Error(`Target server error: ${response.status}`);
     }
-    // Handle different response types
+    // Handle different response types (only for non-202 responses)
     const contentType = response.headers.get('content-type') || '';
     console.log(`[MCP-PROXY] Content type: ${contentType}`);
     if (contentType.includes('application/json')) {
@@ -161,9 +170,9 @@ async function forwardToTarget(targetServer, method, params, apiKey) {
         console.log(`[MCP-PROXY] Parsed SSE response:`, JSON.stringify(parsedResponse, null, 2));
         return parsedResponse;
     }
-    // Handle 202 Accepted with empty content-type (Pizzaz pattern)
-    if (response.status === 202 && !contentType) {
-        console.log(`[MCP-PROXY] Waiting for SSE response for request ${requestId}`);
+    // Allow text/plain for 202 responses (safety check - should have returned earlier)
+    if (status === 202) {
+        console.log(`[MCP-PROXY] 202 with text/plain - returning SSE promise (fallback check)`);
         return responsePromise;
     }
     throw new Error(`Unexpected content-type: ${contentType}`);
@@ -194,9 +203,19 @@ async function getConnection(targetServer, apiKey, requestId, promiseHandlers) {
         console.log(`[MCP-PROXY] URL parsing failed, adding http:// protocol: ${targetServer}`);
         targetUrl = new URL(`http://${targetServer}`);
     }
+    // Derive base URL and paths from target server URL
+    // Use pathname directly if present, otherwise default to /mcp
     const baseUrl = `${targetUrl.protocol}//${targetUrl.host}`;
-    const ssePath = targetUrl.pathname;
-    const postPath = '/mcp/messages';
+    let ssePath = targetUrl.pathname;
+    // If pathname is empty, "/", or doesn't end with /mcp, default to /mcp
+    if (!ssePath || ssePath === "/" || (!ssePath.endsWith("/mcp") && !ssePath.endsWith("/mcp/"))) {
+        ssePath = "/mcp";
+    }
+    // Normalize trailing slash
+    if (ssePath.endsWith("/")) {
+        ssePath = ssePath.slice(0, -1);
+    }
+    const postPath = "/mcp/messages";
     console.log(`[MCP-PROXY] Parsed target server details:`, {
         targetServer,
         baseUrl,
@@ -215,12 +234,14 @@ async function getConnection(targetServer, apiKey, requestId, promiseHandlers) {
         sseHeaders['Authorization'] = `Bearer ${apiKey}`;
         console.log(`[MCP-PROXY] Adding Authorization header to SSE connection`);
     }
-    // Create SSE connection to target server
+    // Create SSE connection to target server (no body timeout so long-lived SSE stays open)
     const sseUrl = `${baseUrl}${ssePath}`;
     console.log(`[MCP-PROXY] Creating SSE connection to: ${sseUrl}`);
-    const sseResp = await fetch(sseUrl, {
+    const sseDispatcher = new Agent({ bodyTimeout: 0, headersTimeout: 0 });
+    const sseResp = await undiciFetch(sseUrl, {
         method: 'GET',
-        headers: sseHeaders
+        headers: sseHeaders,
+        dispatcher: sseDispatcher
     });
     console.log(`[MCP-PROXY] SSE response status: ${sseResp.status}`);
     console.log(`[MCP-PROXY] SSE response headers:`, JSON.stringify(Object.fromEntries(sseResp.headers.entries()), null, 2));
