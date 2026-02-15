@@ -227,6 +227,34 @@ async function forwardToTarget(targetServer: string, method: string, params: any
         } catch {
             /* ignore */
         }
+        // Try parse as SSE (some servers use text/plain for SSE - e.g. "data: {...}\n\n")
+        try {
+            const dataMatch = text?.match(/data:\s*(\{[\s\S]*\})/);
+            if (dataMatch?.[1]) {
+                const parsed = JSON.parse(dataMatch[1]);
+                if (parsed && (parsed.result !== undefined || parsed.error !== undefined)) {
+                    console.log(`[MCP-PROXY] Parsed text/plain via data: prefix as JSON-RPC`);
+                    return parsed;
+                }
+            }
+        } catch {
+            /* ignore */
+        }
+        // Try parseSseResponse (handles full SSE format with data: lines)
+        try {
+            const parsed = parseSseResponse(text || '');
+            if (parsed && (parsed.result !== undefined || parsed.error !== undefined)) {
+                console.log(`[MCP-PROXY] Parsed text/plain as SSE JSON-RPC`);
+                return parsed;
+            }
+        } catch {
+            /* ignore */
+        }
+        // Empty body with text/plain: result is often delivered via SSE (kitchen-sink, Pizzaz)
+        if (!text || text.trim() === '') {
+            console.log(`[MCP-PROXY] text/plain with empty body - waiting for SSE response`);
+            return responsePromise;
+        }
         throw new Error(`Unexpected content-type: ${contentType}`);
     }
 
